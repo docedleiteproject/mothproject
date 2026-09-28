@@ -1,13 +1,11 @@
-name: 🦋 Moth Project - PR Security Guard (All-in-One YAML)
+name: 🦋 Moth Project - Auto Setup & Security Guard
 
 on:
   pull_request:
     branches: [ main, master ]
-    paths:
-      - 'domains/**/info.json'
 
 jobs:
-  validate-pr:
+  auto-setup-and-guard:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do Repositório
@@ -15,7 +13,7 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Validação de Segurança e Permissões via Script YAML
+      - name: Gerenciar Domínios, Autoria e Segurança via YAML
         uses: actions/github-script@v7
         with:
           script: |
@@ -23,69 +21,92 @@ jobs:
             const path = require('path');
             const { execSync } = require('child_process');
 
-            console.log("🦋 [Moth Guard] Iniciando inspeção de segurança do Pull Request...");
+            console.log("🦋 [Moth Automator] Verificando novas pastas e alterações...");
 
             const prAuthor = context.actor;
             const prTitle = context.payload.pull_request.title || "";
             console.log(`👤 Autor do PR: ${prAuthor}`);
             console.log(`📝 Título do PR: ${prTitle}`);
 
-            // Pega os arquivos info.json alterados via git diff entre o pai e o HEAD
+            // Pega todos os arquivos modificados ou criados no PR
             let diffFiles = [];
             try {
               diffFiles = execSync('git diff --name-only HEAD^ HEAD').toString().split('\n');
             } catch (e) {
-              console.log("⚠️ Não foi possível rodar o git diff, usando listagem básica.");
-              return;
+              console.log("⚠️ Executando verificação geral de arquivos criados...");
+              // Caso o diff falhe, lista as pastas dentro de domains/
             }
 
-            const infoFiles = diffFiles.filter(file => file.endsWith('info.json') && file.startsWith('domains/'));
-
-            if (infoFiles.length === 0) {
-              console.log("✨ Nenhuma alteração em info.json detectada.");
-              return;
+            // Descobre pastas novas criadas em domains/ que ainda não têm info.json ou estão sendo adicionadas
+            const domainsDir = path.join(process.cwd(), 'domains');
+            if (!fs.existsSync(domainsDir)) {
+              fs.mkdirSync(domainsDir, { recursive: true });
             }
+
+            const domainFolders = fs.readdirSync(domainsDir, { withFileTypes: })
+              .filter(dirent => dirent.isDirectory())
+              .map(dirent => dirent.name);
 
             let hasError = false;
 
-            for (const file of infoFiles) {
-              const filePath = path.join(process.cwd(), file);
-              const newContent = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            for (const folder of domainFolders) {
+              const folderPath = path.join(domainsDir, folder);
+              const infoPath = path.join(folderPath, 'info.json');
 
-              let oldContent = {};
-              try {
-                const oldRaw = execSync(`git show HEAD^:${file}`).toString();
-                oldContent = JSON.parse(oldRaw);
-              } catch (e) {
-                oldContent = { accountOwner: newContent.accountOwner, isSecureDomain: false };
-              }
-
-              console.log(`📂 Analisando o domínio: ${newContent.domainName || file}`);
-
-              // 1. VERIFICAÇÃO DE DONO (ACCOUNT OWNER)
-              if (oldContent.accountOwner && oldContent.accountOwner !== newContent.accountOwner) {
-                console.error(`❌ ERRO: O usuário '${prAuthor}' tentou alterar o 'accountOwner' de '${oldContent.accountOwner}' para '${newContent.accountOwner}'!`);
-                hasError = true;
-              }
-
-              // 2. VERIFICAÇÃO DE ISSECUREDOMAIN E TERMOS
-              if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
-                // Exige que o título do PR contenha a tag oficial de aceite dos termos
-                const acceptedTerms = prTitle.includes('[agree-terms]');
-
-                if (!acceptedTerms) {
-                  console.error(`❌ ERRO DE SEGURANÇA: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos!`);
-                  console.error(`📜 Para ativar o selo legalmente, inclua a tag '[agree-terms]' no título do Pull Request.`);
+              // SE A PASTA É NOVA E NÃO TEM info.json: O workflow cria automaticamente! 🚀
+              if (!fs.existsSync(infoPath)) {
+                console.log(`✨ [Auto Setup] Nova pasta de domínio detectada: '${folder}'. Gerando info.json...`);
+                
+                // O usuário quer o domínio confiável logo na criação? Verifica a tag [make-secure] no título do PR
+                const wantSecure = prTitle.includes('[make-secure]');
+                
+                if (wantSecure && !prTitle.includes('[agree-terms]')) {
+                  console.error(`❌ ERRO: Para criar o domínio já confiável, você precisa concordar com os termos incluindo '[agree-terms]' no título do PR junto com '[make-secure]'!`);
                   hasError = true;
-                } else {
-                  console.log(`✅ Termos aceitos via tag '[agree-terms]' no título do PR! Selo de segurança validado.`);
+                  continue;
+                }
+
+                const newInfoData = {
+                  domainName: `${folder}.dest`, // Padrão inicial com o nome da pasta
+                  created_at: new Date().toISOString().split('T')[0],
+                  accountOwner: prAuthor, // Trava o dono automaticamente como quem abriu o PR! 🔒
+                  isSecureDomain: wantSecure ? true : false, // Fica seguro se ele marcou a tag
+                  pages: ["index"]
+                };
+
+                fs.writeFileSync(infoPath, JSON.stringify(newInfoData, null, 2), 'utf8');
+                console.log(`✅ [Auto Setup] info.json gerado para '${folder}' com dono '${prAuthor}' e isSecureDomain: ${newInfoData.isSecureDomain}`);
+                
+              } else {
+                // SE O ARQUIVO JÁ EXISTE: Roda as regras normais de segurança e proteção de dono
+                const newContent = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+                let oldContent = {};
+                try {
+                  const oldRaw = execSync(`git show HEAD^:domains/${folder}/info.json`).toString();
+                  oldContent = JSON.parse(oldRaw);
+                } catch (e) {
+                  oldContent = { accountOwner: newContent.accountOwner, isSecureDomain: false };
+                }
+
+                // 1. Bloqueia alteração de dono
+                if (oldContent.accountOwner && oldContent.accountOwner !== newContent.accountOwner) {
+                  console.error(`❌ ERRO: O usuário '${prAuthor}' tentou alterar o 'accountOwner' do domínio '${folder}'!`);
+                  hasError = true;
+                }
+
+                // 2. Bloqueia ativação de isSecureDomain sem os termos
+                if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
+                  if (!prTitle.includes('[agree-terms]')) {
+                    console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos!`);
+                    hasError = true;
+                  }
                 }
               }
             }
 
             if (hasError) {
-              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação de regras de segurança do Moth Project!");
+              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação das regras de automação/segurança!");
             } else {
-              console.log("✨ [Moth Guard] Todas as verificações passaram com sucesso! PR aprovado. 🚀🦋");
+              console.log("✨ [Moth Automator] Tudo certo com os domínios! PR liberado. 🚀🦋");
             }
             
