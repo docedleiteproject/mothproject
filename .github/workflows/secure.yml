@@ -28,24 +28,14 @@ jobs:
             console.log(`👤 Autor do PR: ${prAuthor}`);
             console.log(`📝 Título do PR: ${prTitle}`);
 
-            // Pega todos os arquivos modificados ou criados no PR
-            let diffFiles = [];
-            try {
-              diffFiles = execSync('git diff --name-only HEAD^ HEAD').toString().split('\n');
-            } catch (e) {
-              console.log("⚠️ Executando verificação geral de arquivos criados...");
-              // Caso o diff falhe, lista as pastas dentro de domains/
-            }
-
-            // Descobre pastas novas criadas em domains/ que ainda não têm info.json ou estão sendo adicionadas
             const domainsDir = path.join(process.cwd(), 'domains');
             if (!fs.existsSync(domainsDir)) {
               fs.mkdirSync(domainsDir, { recursive: true });
             }
 
-            const domainFolders = fs.readdirSync(domainsDir, { withFileTypes: })
-              .filter(dirent => dirent.isDirectory())
-              .map(dirent => dirent.name);
+            // Listagem de pastas de forma totalmente segura (sem erros de sintaxe)
+            const entries = fs.readdirSync(domainsDir, { withFileTypes: true });
+            const domainFolders = entries.filter(dirent => dirent.isDirectory()).map(dirent => dirent.name);
 
             let hasError = false;
 
@@ -57,28 +47,27 @@ jobs:
               if (!fs.existsSync(infoPath)) {
                 console.log(`✨ [Auto Setup] Nova pasta de domínio detectada: '${folder}'. Gerando info.json...`);
                 
-                // O usuário quer o domínio confiável logo na criação? Verifica a tag [make-secure] no título do PR
                 const wantSecure = prTitle.includes('[make-secure]');
                 
                 if (wantSecure && !prTitle.includes('[agree-terms]')) {
-                  console.error(`❌ ERRO: Para criar o domínio já confiável, você precisa concordar com os termos incluindo '[agree-terms]' no título do PR junto com '[make-secure]'!`);
+                  console.error(`❌ ERRO: Para criar o domínio já confiável, inclua '[agree-terms]' e '[make-secure]' no título do PR!`);
                   hasError = true;
                   continue;
                 }
 
                 const newInfoData = {
-                  domainName: `${folder}.dest`, // Padrão inicial com o nome da pasta
+                  domainName: `${folder}.dest`,
                   created_at: new Date().toISOString().split('T')[0],
-                  accountOwner: prAuthor, // Trava o dono automaticamente como quem abriu o PR! 🔒
-                  isSecureDomain: wantSecure ? true : false, // Fica seguro se ele marcou a tag
+                  accountOwner: prAuthor,
+                  isSecureDomain: wantSecure ? true : false,
                   pages: ["index"]
                 };
 
                 fs.writeFileSync(infoPath, JSON.stringify(newInfoData, null, 2), 'utf8');
-                console.log(`✅ [Auto Setup] info.json gerado para '${folder}' com dono '${prAuthor}' e isSecureDomain: ${newInfoData.isSecureDomain}`);
+                console.log(`✅ [Auto Setup] info.json gerado para '${folder}' com dono '${prAuthor}'!`);
                 
               } else {
-                // SE O ARQUIVO JÁ EXISTE: Roda as regras normais de segurança e proteção de dono
+                // SE O ARQUIVO JÁ EXISTE: Valida as regras de segurança normais
                 const newContent = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
                 let oldContent = {};
                 try {
@@ -97,7 +86,7 @@ jobs:
                 // 2. Bloqueia ativação de isSecureDomain sem os termos
                 if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
                   if (!prTitle.includes('[agree-terms]')) {
-                    console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos!`);
+                    console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos no título do PR!`);
                     hasError = true;
                   }
                 }
@@ -105,7 +94,7 @@ jobs:
             }
 
             if (hasError) {
-              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação das regras de automação/segurança!");
+              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação das regras de segurança!");
             } else {
               console.log("✨ [Moth Automator] Tudo certo com os domínios! PR liberado. 🚀🦋");
             }
