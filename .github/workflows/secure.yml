@@ -1,0 +1,91 @@
+name: 🦋 Moth Project - PR Security Guard (All-in-One YAML)
+
+on:
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'domains/**/info.json'
+
+jobs:
+  validate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Validação de Segurança e Permissões via Script YAML
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { execSync } = require('child_process');
+
+            console.log("🦋 [Moth Guard] Iniciando inspeção de segurança do Pull Request...");
+
+            const prAuthor = context.actor;
+            const prTitle = context.payload.pull_request.title || "";
+            console.log(`👤 Autor do PR: ${prAuthor}`);
+            console.log(`📝 Título do PR: ${prTitle}`);
+
+            // Pega os arquivos info.json alterados via git diff entre o pai e o HEAD
+            let diffFiles = [];
+            try {
+              diffFiles = execSync('git diff --name-only HEAD^ HEAD').toString().split('\n');
+            } catch (e) {
+              console.log("⚠️ Não foi possível rodar o git diff, usando listagem básica.");
+              return;
+            }
+
+            const infoFiles = diffFiles.filter(file => file.endsWith('info.json') && file.startsWith('domains/'));
+
+            if (infoFiles.length === 0) {
+              console.log("✨ Nenhuma alteração em info.json detectada.");
+              return;
+            }
+
+            let hasError = false;
+
+            for (const file of infoFiles) {
+              const filePath = path.join(process.cwd(), file);
+              const newContent = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+
+              let oldContent = {};
+              try {
+                const oldRaw = execSync(`git show HEAD^:${file}`).toString();
+                oldContent = JSON.parse(oldRaw);
+              } catch (e) {
+                oldContent = { accountOwner: newContent.accountOwner, isSecureDomain: false };
+              }
+
+              console.log(`📂 Analisando o domínio: ${newContent.domainName || file}`);
+
+              // 1. VERIFICAÇÃO DE DONO (ACCOUNT OWNER)
+              if (oldContent.accountOwner && oldContent.accountOwner !== newContent.accountOwner) {
+                console.error(`❌ ERRO: O usuário '${prAuthor}' tentou alterar o 'accountOwner' de '${oldContent.accountOwner}' para '${newContent.accountOwner}'!`);
+                hasError = true;
+              }
+
+              // 2. VERIFICAÇÃO DE ISSECUREDOMAIN E TERMOS
+              if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
+                // Exige que o título do PR contenha a tag oficial de aceite dos termos
+                const acceptedTerms = prTitle.includes('[agree-terms]');
+
+                if (!acceptedTerms) {
+                  console.error(`❌ ERRO DE SEGURANÇA: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos!`);
+                  console.error(`📜 Para ativar o selo legalmente, inclua a tag '[agree-terms]' no título do Pull Request.`);
+                  hasError = true;
+                } else {
+                  console.log(`✅ Termos aceitos via tag '[agree-terms]' no título do PR! Selo de segurança validado.`);
+                }
+              }
+            }
+
+            if (hasError) {
+              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação de regras de segurança do Moth Project!");
+            } else {
+              console.log("✨ [Moth Guard] Todas as verificações passaram com sucesso! PR aprovado. 🚀🦋");
+            }
+            
