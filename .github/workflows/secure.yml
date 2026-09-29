@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: write # Permite que o workflow escreva e commite arquivos no repositório
+
 jobs:
   auto-setup-and-guard:
     runs-on: ubuntu-latest
@@ -11,7 +14,13 @@ jobs:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 2
+
+      - name: Configurar Git User
+        run: |
+          git config --global user.name "Moth Bot"
+          git config --global user.email "mothbot-1@github.com"
 
       - name: Gerenciar Domínios, Autoria e Segurança via YAML
         uses: actions/github-script@v7
@@ -23,7 +32,7 @@ jobs:
 
             console.log("🦋 [Moth Automator] Verificando novas pastas e alterações...");
 
-            const prAuthor = context.actor;
+            const prAuthor = context.payload.pull_request.user.login;
             const prTitle = context.payload.pull_request.title || "";
             console.log(`👤 Autor do PR: ${prAuthor}`);
             console.log(`📝 Título do PR: ${prTitle}`);
@@ -33,11 +42,11 @@ jobs:
               fs.mkdirSync(domainsDir, { recursive: true });
             }
 
-            // Listagem de pastas de forma totalmente segura (sem erros de sintaxe)
             const entries = fs.readdirSync(domainsDir, { withFileTypes: true });
             const domainFolders = entries.filter(dirent => dirent.isDirectory()).map(dirent => dirent.name);
 
             let hasError = false;
+            let filesCreated = false;
 
             for (const folder of domainFolders) {
               const folderPath = path.join(domainsDir, folder);
@@ -45,7 +54,7 @@ jobs:
 
               // SE A PASTA É NOVA E NÃO TEM info.json: O workflow cria automaticamente! 🚀
               if (!fs.existsSync(infoPath)) {
-                console.log(`✨ [Auto Setup] Nova pasta de domínio detectada: '${folder}'. Gerando info.json...`);
+                console.log(`✨ [Auto Setup] Nova pasta detectada: '${folder}'. Criando info.json...`);
                 
                 const wantSecure = prTitle.includes('[make-secure]');
                 
@@ -64,7 +73,15 @@ jobs:
                 };
 
                 fs.writeFileSync(infoPath, JSON.stringify(newInfoData, null, 2), 'utf8');
-                console.log(`✅ [Auto Setup] info.json gerado para '${folder}' com dono '${prAuthor}'!`);
+                
+                // Cria também uma index.html padrão de brinde
+                const htmlPath = path.join(folderPath, 'index.html');
+                if (!fs.existsSync(htmlPath)) {
+                  fs.writeFileSync(htmlPath, `<h1>Bem-vindo ao ${folder}.dest 🦋</h1><p>Gerenciado pelo Moth Project.</p>`, 'utf8');
+                }
+
+                console.log(`✅ [Auto Setup] info.json e index.html gerados para '${folder}'!`);
+                filesCreated = true;
                 
               } else {
                 // SE O ARQUIVO JÁ EXISTE: Valida as regras de segurança normais
@@ -77,13 +94,11 @@ jobs:
                   oldContent = { accountOwner: newContent.accountOwner, isSecureDomain: false };
                 }
 
-                // 1. Bloqueia alteração de dono
                 if (oldContent.accountOwner && oldContent.accountOwner !== newContent.accountOwner) {
                   console.error(`❌ ERRO: O usuário '${prAuthor}' tentou alterar o 'accountOwner' do domínio '${folder}'!`);
                   hasError = true;
                 }
 
-                // 2. Bloqueia ativação de isSecureDomain sem os termos
                 if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
                   if (!prTitle.includes('[agree-terms]')) {
                     console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos no título do PR!`);
@@ -96,6 +111,21 @@ jobs:
             if (hasError) {
               core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação das regras de segurança!");
             } else {
-              console.log("✨ [Moth Automator] Tudo certo com os domínios! PR liberado. 🚀🦋");
+              // Salva a flag no ambiente do Node para o próximo passo dar commit
+              process.env.FILES_CREATED = filesCreated ? "true" : "false";
+              console.log("✨ [Moth Automator] Validação concluída com sucesso!");
             }
-            
+
+      - name: Commitar e Enviar os arquivos gerados de volta para o PR
+        if: success()
+        run: |
+          git status
+          git add domains/
+          if git diff --staged --quiet; then
+            echo "Nenhuma alteração pendente para commitar."
+          else
+            git commit -m "🤖 [Moth Bot] Auto-gerado info.json e estrutura para o domínio"
+            git push
+            echo "✨ Arquivos enviados com sucesso para a branch do PR!"
+          fi
+          
