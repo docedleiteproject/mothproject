@@ -1,28 +1,19 @@
-name: 🦋 Moth Project - Auto Setup & Security Guard
+name: 🦋 Moth Project - Security Guard
 
 on:
   pull_request:
     branches: [ main, master ]
 
-permissions:
-  contents: write
-
 jobs:
-  auto-setup-and-guard:
+  guard:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do Repositório
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 2
 
-      - name: Configurar Git User
-        run: |
-          git config --global user.name "Moth Bot"
-          git config --global user.email "mothbot-1@github.com"
-
-      - name: Gerenciar Domínios, Autoria e Segurança via YAML
+      - name: Validar Regras e Permissões do Moth Project
         uses: actions/github-script@v7
         with:
           script: |
@@ -30,62 +21,31 @@ jobs:
             const path = require('path');
             const { execSync } = require('child_process');
 
-            console.log("🦋 [Moth Automator] Verificando novas pastas e alterações...");
+            console.log("📢 [Moth Notice] A pasta /domains é o diretório público de registros dos domínios.");
+            console.log("🦋 [Moth Guard] Validando o Pull Request...");
 
             const prAuthor = context.payload.pull_request.user.login;
             const prTitle = context.payload.pull_request.title || "";
-            console.log(`👤 Autor do PR: ${prAuthor}`);
-            console.log(`📝 Título do PR: ${prTitle}`);
+            console.log(`👤 Autor: ${prAuthor} | Título: ${prTitle}`);
 
             const domainsDir = path.join(process.cwd(), 'domains');
             if (!fs.existsSync(domainsDir)) {
               fs.mkdirSync(domainsDir, { recursive: true });
             }
 
-            // Listagem de pastas de forma segura
             const entries = fs.readdirSync(domainsDir, { withFileTypes: true });
             const domainFolders = entries.filter(dirent => dirent.isDirectory()).map(dirent => dirent.name);
 
             let hasError = false;
-            let filesCreated = false;
 
             for (const folder of domainFolders) {
-              const folderPath = path.join(domainsDir, folder);
-              const infoPath = path.join(folderPath, 'info.json');
+              const infoPath = path.join(domainsDir, folder, 'info.json');
 
-              // SE A PASTA É NOVA E NÃO TEM info.json: O workflow cria automaticamente! 🚀
+              // Se a pasta é nova e não tem info.json, avisa o usuário para criar o info.json junto
               if (!fs.existsSync(infoPath)) {
-                console.log(`✨ [Auto Setup] Nova pasta de domínio detectada: '${folder}'. Gerando info.json...`);
-                
-                const wantSecure = prTitle.includes('[make-secure]');
-                
-                if (wantSecure && !prTitle.includes('[agree-terms]')) {
-                  console.error(`❌ ERRO: Para criar o domínio já confiável, inclua '[agree-terms]' e '[make-secure]' no título do PR!`);
-                  hasError = true;
-                  continue;
-                }
-
-                const newInfoData = {
-                  domainName: `${folder}.dest`,
-                  created_at: new Date().toISOString().split('T')[0],
-                  accountOwner: prAuthor,
-                  isSecureDomain: wantSecure ? true : false,
-                  pages: ["index"]
-                };
-
-                fs.writeFileSync(infoPath, JSON.stringify(newInfoData, null, 2), 'utf8');
-                
-                // Cria uma index.html padrão de brinde
-                const htmlPath = path.join(folderPath, 'index.html');
-                if (!fs.existsSync(htmlPath)) {
-                  fs.writeFileSync(htmlPath, `<h1>Bem-vindo ao ${folder}.dest 🦋</h1><p>Gerenciado automaticamente pelo Moth Project.</p>`, 'utf8');
-                }
-
-                console.log(`✅ [Auto Setup] info.json e index.html gerados para '${folder}' com dono '${prAuthor}'!`);
-                filesCreated = true;
-                
+                console.log(`✨ Pasta nova detectada: '${folder}'. Certifique-se de incluir o info.json com o accountOwner: "${prAuthor}"!`);
               } else {
-                // SE O ARQUIVO JÁ EXISTE: Valida as regras de segurança normais
+                // Valida as regras de segurança normais
                 const newContent = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
                 let oldContent = {};
                 try {
@@ -104,7 +64,7 @@ jobs:
                 // 2. Bloqueia ativação de isSecureDomain sem os termos
                 if (oldContent.isSecureDomain === false && newContent.isSecureDomain === true) {
                   if (!prTitle.includes('[agree-terms]')) {
-                    console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem aceitar os termos no título do PR!`);
+                    console.error(`❌ ERRO: Tentaram mudar 'isSecureDomain' para 'true' sem a tag '[agree-terms]' no título do PR!`);
                     hasError = true;
                   }
                 }
@@ -112,22 +72,8 @@ jobs:
             }
 
             if (hasError) {
-              core.setFailed("🚫 [Moth Guard] O Pull Request foi REJEITADO por violação das regras de segurança!");
+              core.setFailed("🚫 [Moth Guard] Pull Request REJEITADO por violação de segurança!");
             } else {
-              process.env.FILES_CREATED = filesCreated ? "true" : "false";
-              console.log("✨ [Moth Automator] Tudo certo com os domínios! PR liberado. 🚀🦋");
+              console.log("✨ [Moth Guard] Validação concluída com sucesso! PR aprovado. 🚀🦋");
             }
-
-      - name: Commitar e Enviar os arquivos gerados de volta para o PR
-        if: success() && env.FILES_CREATED == 'true'
-        run: |
-          git status
-          git add domains/
-          if git diff --staged --quiet; then
-            echo "Nenhuma alteração pendente para commitar."
-          else
-            git commit -m "🤖 [Moth Bot] Auto-gerado info.json e estrutura para o domínio"
-            git push origin HEAD:${{ github.head_ref }}
-            echo "✨ Arquivos enviados com sucesso para a branch do PR!"
-          fi
-          
+            
